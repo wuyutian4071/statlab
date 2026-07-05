@@ -19,11 +19,13 @@ venv/
 coverage.xml
 htmlcov/
 
-# Data & generated artifacts (reproducible from `make reproduce`)
-data/
-results/
-reports/*.html
-mlruns/
+# Data & generated artifacts (reproducible from `make reproduce`).
+# NOTE: anchor these to the repo root with a leading slash so they do NOT also match
+# the source package src/statlab/data/ (an unanchored `data/` matches any depth).
+/data/
+/results/
+/reports/*.html
+/mlruns/
 
 # OS / editor
 .DS_Store
