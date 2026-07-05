@@ -75,6 +75,11 @@ warn_unreachable = true
 warn_redundant_casts = true
 disallow_untyped_defs = true
 files = ["src", "tests"]
+# Resolve the `statlab` package from source (src/ layout) so it is analyzed as the
+# first-party package under test rather than as an installed third-party dependency —
+# this keeps behavior identical between an editable local install and a clean CI runner.
+mypy_path = "src"
+explicit_package_bases = true
 plugins = []
 
 [[tool.mypy.overrides]]
