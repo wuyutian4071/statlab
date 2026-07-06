@@ -9,6 +9,7 @@ import pytest
 
 from statlab import __version__
 from statlab.cli import main
+from statlab.data import read_bars
 
 
 def test_version(capsys: pytest.CaptureFixture[str]) -> None:
@@ -41,3 +42,22 @@ def test_gen_synth_is_deterministic(tmp_path: Path) -> None:
 def test_requires_subcommand() -> None:
     with pytest.raises(SystemExit):
         main([])
+
+
+def test_ingest_synthetic_writes_dataset(tmp_path: Path) -> None:
+    root = tmp_path / "bars"
+    # fmt: off
+    rc = main([
+        "ingest", "--source", "synthetic", "--out", str(root),
+        "--n", "120", "--pairs", "2", "--noise", "1", "--seed", "4",
+    ])
+    # fmt: on
+    assert rc == 0
+    bars = read_bars(root)
+    assert bars["ticker"].nunique() == 2 * 2 + 1
+    assert len(bars) == 120 * (2 * 2 + 1)
+
+
+def test_ingest_yfinance_without_tickers_errors(tmp_path: Path) -> None:
+    rc = main(["ingest", "--source", "yfinance", "--out", str(tmp_path / "x")])
+    assert rc == 2

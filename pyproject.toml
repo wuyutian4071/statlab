@@ -86,6 +86,13 @@ plugins = []
 module = ["statsmodels.*", "yfinance.*", "scipy.*", "matplotlib.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# pyarrow ships partial/incomplete type info; treat it as untyped so its calls don't
+# trip strict's disallow_untyped_calls. Storage returns are annotated explicitly.
+module = ["pyarrow.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 addopts = "-ra -q --strict-markers"

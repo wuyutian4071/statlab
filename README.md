@@ -21,13 +21,13 @@
 
 ## Status
 
-Built milestone by milestone. Current: **M1 — skeleton, tooling, and a synthetic
-data generator** so the entire suite and demo run offline with no data download.
+Built milestone by milestone. Current: **M2 — the data layer and the point-in-time
+universe**, with a dedicated test suite that *proves* future data cannot leak.
 
 | Milestone | Scope | State |
 |-----------|-------|-------|
 | M1 | Repo skeleton, uv/ruff/mypy/pytest CI, synthetic OU data generator | ✅ |
-| M2 | Data layer + `PointInTimeUniverse` + `test_no_lookahead.py` | ⬜ |
+| M2 | Data layer (schema, sources, validation, Parquet storage) + `PointInTimeUniverse` + `test_no_lookahead.py` | ✅ |
 | M3 | Cointegration (Engle-Granger, Johansen), half-life, Kalman filter | ⬜ |
 | M4 | Event-driven backtester + portfolio-accounting invariants + cost model | ⬜ |
 | M5 | Strategy wiring + single-pair known-answer backtests | ⬜ |
@@ -42,9 +42,31 @@ data generator** so the entire suite and demo run offline with no data download.
 make install        # sync deps into a local .venv
 make check          # lint + typecheck + test (the full CI gate)
 
-# Generate offline synthetic data (a universe with known cointegrated pairs):
-uv run statlab gen-synth --out data/synthetic/panel.parquet --seed 7
+# Ingest bars into a partitioned Parquet dataset (offline synthetic source by default;
+# use --source yfinance --tickers AAPL,MSFT,... for real data):
+uv run statlab ingest --source synthetic --out data/bars --n 1000 --seed 7
 ```
+
+### The point-in-time universe (M2)
+
+`PointInTimeUniverse` is the project's structural defence against lookahead bias. Prices
+are stored privately; every read goes through an `as_of(t)` / `window(t, size)` method that
+clips to `date <= t` and to the tickers that are *members* at `t` (survivorship-aware).
+
+```python
+from statlab.data import PointInTimeUniverse, SyntheticSource
+
+u = PointInTimeUniverse.from_bars(SyntheticSource(n=1000).fetch())
+u.as_of("2018-06-01")          # only rows dated <= 2018-06-01
+u.window("2018-06-01", 60)     # the trailing 60 observations, never any future bar
+u.members_as_of("2018-06-01")  # tickers actually listed on that date
+```
+
+The guarantee is proven, not asserted by inspection: `tests/test_no_lookahead.py` checks
+the clipping invariant for *every* date and — the decisive test — verifies that a universe
+built on a *prefix* of history returns byte-for-byte the same thing as one built on full
+history, for every date in the prefix. If future rows could influence a past read, that
+equality would break.
 
 ## Design principles
 

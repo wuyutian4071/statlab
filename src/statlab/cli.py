@@ -12,11 +12,43 @@ from pathlib import Path
 import numpy as np
 
 from statlab import __version__
-from statlab.data import simulate_correlated_ou_panel
+from statlab.data import (
+    SyntheticSource,
+    YFinanceSource,
+    simulate_correlated_ou_panel,
+    validate_bars,
+    write_bars,
+)
+from statlab.data.sources import BarSource
 
 
 def _cmd_version(_: argparse.Namespace) -> int:
     print(f"statlab {__version__}")
+    return 0
+
+
+def _cmd_ingest(ns: argparse.Namespace) -> int:
+    """Fetch bars from a source, validate them, and write a partitioned Parquet dataset."""
+    source: BarSource
+    if ns.source == "synthetic":
+        source = SyntheticSource(n=ns.n, n_pairs=ns.pairs, n_noise=ns.noise, seed=ns.seed)
+    else:
+        if not ns.tickers:
+            print("error: --tickers is required for the yfinance source")
+            return 2
+        source = YFinanceSource(ns.tickers.split(","), start=ns.start, end=ns.end)
+
+    bars = source.fetch()
+    report = validate_bars(bars)
+    for issue in report.issues:
+        print(f"  [{issue.severity.value}] {issue.code} {issue.ticker or ''}: {issue.message}")
+    if not report.ok:
+        print(f"validation failed with {len(report.errors)} error(s); not writing")
+        return 1
+
+    root = write_bars(bars, ns.out)
+    n_tickers = bars["ticker"].nunique()
+    print(f"wrote {len(bars)} bars across {n_tickers} tickers to {root}")
     return 0
 
 
@@ -46,6 +78,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_gen.add_argument("--noise", type=int, default=4, help="independent random walks")
     p_gen.add_argument("--seed", type=int, default=7, help="RNG seed")
     p_gen.set_defaults(func=_cmd_gen_synth)
+
+    p_ing = sub.add_parser("ingest", help="ingest bars into a partitioned Parquet dataset")
+    p_ing.add_argument(
+        "--source", choices=["synthetic", "yfinance"], default="synthetic", help="data source"
+    )
+    p_ing.add_argument("--out", default="data/bars", help="output dataset root")
+    p_ing.add_argument("--tickers", default="", help="comma-separated tickers (yfinance)")
+    p_ing.add_argument("--start", default="2015-01-01", help="start date (yfinance)")
+    p_ing.add_argument("--end", default=None, help="end date (yfinance)")
+    p_ing.add_argument("--n", type=int, default=1000, help="days (synthetic)")
+    p_ing.add_argument("--pairs", type=int, default=3, help="cointegrated pairs (synthetic)")
+    p_ing.add_argument("--noise", type=int, default=4, help="random walks (synthetic)")
+    p_ing.add_argument("--seed", type=int, default=7, help="RNG seed (synthetic)")
+    p_ing.set_defaults(func=_cmd_ingest)
 
     return parser
 

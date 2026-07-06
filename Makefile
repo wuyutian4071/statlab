@@ -27,7 +27,8 @@ check: lint typecheck test  ## Run the full CI gate locally
 
 reproduce:  ## Regenerate all synthetic data and results from scratch (deterministic)
 	uv run statlab gen-synth --out data/synthetic/panel.parquet --seed 7
-	@echo "M1: synthetic data regenerated. Later milestones extend this target."
+	uv run statlab ingest --source synthetic --out data/bars --n 1000 --seed 7
+	@echo "M2: synthetic panel + partitioned bar dataset regenerated. Later milestones extend this."
 
 clean:  ## Remove caches and generated artifacts
 	rm -rf .mypy_cache .ruff_cache .pytest_cache htmlcov .coverage coverage.xml
