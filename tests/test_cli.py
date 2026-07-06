@@ -61,3 +61,17 @@ def test_ingest_synthetic_writes_dataset(tmp_path: Path) -> None:
 def test_ingest_yfinance_without_tickers_errors(tmp_path: Path) -> None:
     rc = main(["ingest", "--source", "yfinance", "--out", str(tmp_path / "x")])
     assert rc == 2
+
+
+def test_research_discovers_pairs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = tmp_path / "bars"
+    # fmt: off
+    main([
+        "ingest", "--source", "synthetic", "--out", str(root),
+        "--n", "800", "--pairs", "2", "--noise", "1", "--seed", "21",
+    ])
+    # fmt: on
+    rc = main(["research", "--dataset", str(root), "--min-corr", "0.3", "--max-pvalue", "0.05"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "discovered" in out

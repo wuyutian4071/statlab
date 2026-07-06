@@ -15,11 +15,14 @@ from statlab import __version__
 from statlab.data import (
     SyntheticSource,
     YFinanceSource,
+    read_bars,
     simulate_correlated_ou_panel,
+    to_price_panel,
     validate_bars,
     write_bars,
 )
 from statlab.data.sources import BarSource
+from statlab.signals import discover_pairs
 
 
 def _cmd_version(_: argparse.Namespace) -> int:
@@ -64,6 +67,25 @@ def _cmd_gen_synth(ns: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_research(ns: argparse.Namespace) -> int:
+    """Discover cointegrated, tradable pairs from an ingested bar dataset."""
+    bars = read_bars(ns.dataset)
+    panel = to_price_panel(bars)
+    candidates = discover_pairs(
+        panel,
+        min_correlation=ns.min_corr,
+        max_pvalue=ns.max_pvalue,
+        max_half_life=ns.max_half_life,
+    )
+    if not candidates:
+        print("no cointegrated pairs found under the given thresholds")
+        return 0
+    print(f"discovered {len(candidates)} pair(s), ranked by cointegration p-value:")
+    for c in candidates[: ns.top]:
+        print(f"  {c}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="statlab", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -92,6 +114,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_ing.add_argument("--noise", type=int, default=4, help="random walks (synthetic)")
     p_ing.add_argument("--seed", type=int, default=7, help="RNG seed (synthetic)")
     p_ing.set_defaults(func=_cmd_ingest)
+
+    p_res = sub.add_parser("research", help="discover cointegrated pairs from a dataset")
+    p_res.add_argument("--dataset", default="data/bars", help="bar dataset root")
+    p_res.add_argument("--min-corr", type=float, default=0.7, help="min return correlation")
+    p_res.add_argument("--max-pvalue", type=float, default=0.05, help="max cointegration p")
+    p_res.add_argument("--max-half-life", type=float, default=252.0, help="max half-life")
+    p_res.add_argument("--top", type=int, default=20, help="how many pairs to print")
+    p_res.set_defaults(func=_cmd_research)
 
     return parser
 

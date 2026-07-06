@@ -21,14 +21,14 @@
 
 ## Status
 
-Built milestone by milestone. Current: **M2 — the data layer and the point-in-time
-universe**, with a dedicated test suite that *proves* future data cannot leak.
+Built milestone by milestone. Current: **M3 — the signal-research layer**: cointegration
+tests, half-life, a hand-rolled Kalman hedge ratio, the z-score signal, and pair discovery.
 
 | Milestone | Scope | State |
 |-----------|-------|-------|
 | M1 | Repo skeleton, uv/ruff/mypy/pytest CI, synthetic OU data generator | ✅ |
 | M2 | Data layer (schema, sources, validation, Parquet storage) + `PointInTimeUniverse` + `test_no_lookahead.py` | ✅ |
-| M3 | Cointegration (Engle-Granger, Johansen), half-life, Kalman filter | ⬜ |
+| M3 | Cointegration (Engle-Granger, Johansen), half-life, hand-rolled Kalman hedge ratio, z-score signal, pair discovery | ✅ |
 | M4 | Event-driven backtester + portfolio-accounting invariants + cost model | ⬜ |
 | M5 | Strategy wiring + single-pair known-answer backtests | ⬜ |
 | M6 | Walk-forward + sensitivity grid + deflated Sharpe | ⬜ |
@@ -67,6 +67,29 @@ the clipping invariant for *every* date and — the decisive test — verifies t
 built on a *prefix* of history returns byte-for-byte the same thing as one built on full
 history, for every date in the prefix. If future rows could influence a past read, that
 equality would break.
+
+### Signal research (M3)
+
+```bash
+# Discover cointegrated, tradable pairs from an ingested dataset:
+uv run statlab research --dataset data/bars --min-corr 0.7 --max-pvalue 0.05
+```
+
+The `statlab.signals` package provides, each validated against a known closed-form or
+statsmodels reference:
+
+- **Cointegration** — `engle_granger` (two-step; hedge ratio by OLS, p-value from the
+  correctly-tabulated MacKinnon critical values) and `johansen` (system trace test / rank).
+- **`half_life`** — mean-reversion half-life from an AR(1) fit; recovers `ln(2)/θ` on a
+  synthetic OU spread and returns `inf` for a random walk.
+- **`kalman_hedge`** — a hand-rolled Kalman filter tracking a *dynamic* hedge ratio
+  `[β_t, α_t]` causally. The innovation is the tradable spread; in the constant-coefficient
+  limit it reduces to recursive least squares and converges to OLS (a tested property).
+- **`rolling_zscore` + `generate_positions`** — a causal z-score and an entry/exit/stop
+  state machine with hysteresis.
+- **`discover_pairs`** — the funnel: correlation pre-filter → cointegration → half-life
+  band, ranked by p-value. (Multiple-comparisons caveat: this is in-sample selection;
+  M6's walk-forward + deflated Sharpe address it.)
 
 ## Design principles
 

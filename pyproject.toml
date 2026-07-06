@@ -101,6 +101,11 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "network: marks tests that require network access",
 ]
+filterwarnings = [
+    # statsmodels' coint_johansen casts near-unit-root complex eigenvalues to real
+    # internally; the warning is harmless and out of our control.
+    "ignore:Casting complex values to real discards the imaginary part",
+]
 
 [tool.coverage.run]
 branch = true
