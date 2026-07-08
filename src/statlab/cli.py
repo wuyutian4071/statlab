@@ -12,7 +12,14 @@ from pathlib import Path
 import numpy as np
 
 from statlab import __version__
+from statlab.backtest import (
+    BacktestEngine,
+    BuyAndHoldStrategy,
+    Portfolio,
+    sharpe_ratio,
+)
 from statlab.data import (
+    PointInTimeUniverse,
     SyntheticSource,
     YFinanceSource,
     read_bars,
@@ -86,6 +93,29 @@ def _cmd_research(ns: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_backtest(ns: argparse.Namespace) -> int:
+    """Run a buy-and-hold backtest over an ingested dataset (engine demo)."""
+    universe = PointInTimeUniverse.from_bars(read_bars(ns.dataset))
+    days = universe.trading_days("1900-01-01", "2100-01-01")
+    if len(days) < 2:
+        print("not enough history to backtest")
+        return 1
+    start, end = days[0], days[-1]
+    tickers = universe.members_as_of(start)[: ns.max_names]
+
+    engine = BacktestEngine(universe, BuyAndHoldStrategy(tickers, ns.notional), Portfolio(ns.cash))
+    result = engine.run(start, end)
+
+    print(f"backtest {start.date()} -> {end.date()}  ({len(days)} days, {len(tickers)} names)")
+    print(f"  initial equity : {result.initial_cash:,.0f}")
+    print(f"  final equity   : {result.equity_curve.iloc[-1]:,.0f}")
+    print(f"  total return   : {result.total_return:+.2%}")
+    print(f"  ann. Sharpe    : {sharpe_ratio(result.returns()):.2f}")
+    print(f"  transaction cost: {result.total_costs:,.0f}")
+    print(f"  fills          : {len(result.fills)}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="statlab", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -122,6 +152,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_res.add_argument("--max-half-life", type=float, default=252.0, help="max half-life")
     p_res.add_argument("--top", type=int, default=20, help="how many pairs to print")
     p_res.set_defaults(func=_cmd_research)
+
+    p_bt = sub.add_parser("backtest", help="run a buy-and-hold backtest (engine demo)")
+    p_bt.add_argument("--dataset", default="data/bars", help="bar dataset root")
+    p_bt.add_argument("--cash", type=float, default=1_000_000.0, help="initial cash")
+    p_bt.add_argument("--notional", type=float, default=500_000.0, help="invested notional")
+    p_bt.add_argument("--max-names", type=int, default=5, help="max tickers to hold")
+    p_bt.set_defaults(func=_cmd_backtest)
 
     return parser
 

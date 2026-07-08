@@ -75,3 +75,18 @@ def test_research_discovers_pairs(tmp_path: Path, capsys: pytest.CaptureFixture[
     assert rc == 0
     out = capsys.readouterr().out
     assert "discovered" in out
+
+
+def test_backtest_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = tmp_path / "bars"
+    # fmt: off
+    main([
+        "ingest", "--source", "synthetic", "--out", str(root),
+        "--n", "300", "--pairs", "1", "--noise", "1", "--seed", "31",
+    ])
+    # fmt: on
+    rc = main(["backtest", "--dataset", str(root), "--max-names", "2"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "final equity" in out
+    assert "Sharpe" in out
