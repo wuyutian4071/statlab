@@ -6,6 +6,7 @@ from statlab.backtest.costs import CostModel
 from statlab.backtest.engine import BacktestEngine, BacktestResult, sharpe_ratio
 from statlab.backtest.events import Fill, MarketEvent, Order
 from statlab.backtest.execution import ExecutionSimulator
+from statlab.backtest.pairs import PairsStrategy
 from statlab.backtest.portfolio import Portfolio
 from statlab.backtest.strategy import BuyAndHoldStrategy, Strategy
 
@@ -18,6 +19,7 @@ __all__ = [
     "Fill",
     "MarketEvent",
     "Order",
+    "PairsStrategy",
     "Portfolio",
     "Strategy",
     "sharpe_ratio",
