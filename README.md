@@ -21,9 +21,9 @@
 
 ## Status
 
-Built milestone by milestone. Current: **M5 — the pairs-trading strategy**: the M3 signals
-(Kalman hedge ratio, z-score state machine) wired into an actual `Strategy` that trades a
-cointegrated pair through the M4 engine, verified against independently-computed known answers.
+Built milestone by milestone. Current: **M6 — walk-forward validation**: pair discovery is
+never trusted in-sample — every reported result is either backtested strictly out-of-sample
+on data discovery never saw, or explicitly deflated for how many configurations were searched.
 
 | Milestone | Scope | State |
 |-----------|-------|-------|
@@ -32,7 +32,7 @@ cointegrated pair through the M4 engine, verified against independently-computed
 | M3 | Cointegration (Engle-Granger, Johansen), half-life, hand-rolled Kalman hedge ratio, z-score signal, pair discovery | ✅ |
 | M4 | Event-driven backtester + portfolio-accounting invariants + cost model | ✅ |
 | M5 | Strategy wiring + single-pair known-answer backtests | ✅ |
-| M6 | Walk-forward + sensitivity grid + deflated Sharpe | ⬜ |
+| M6 | Walk-forward + sensitivity grid + deflated Sharpe | ✅ |
 | M7 | HTML tear sheet + notebooks + `make reproduce` | ⬜ |
 | M8 | Polished docs, honest results discussion, architecture diagram | ⬜ |
 
@@ -54,6 +54,11 @@ uv run statlab backtest --dataset data/bars --cash 1000000 --max-names 5
 # the default discovery thresholds are conservative, so a smaller/looser demo dataset
 # tends to actually find one; see the M5 section below for a worked example):
 uv run statlab backtest-pair --dataset data/bars --min-corr 0.3 --max-pvalue 0.1
+
+# M6: walk-forward discovery+backtest, and a parameter sensitivity grid with a
+# deflated Sharpe ratio (see the M6 section below for worked examples):
+uv run statlab validate --dataset data/bars --train-days 200 --test-days 100
+uv run statlab sensitivity --dataset data/bars --min-corr 0.3 --max-pvalue 0.1
 ```
 
 ### The point-in-time universe (M2)
@@ -186,6 +191,89 @@ the one-bar execution lag are both correct, not just "it ran"); a small determin
 scenario with exactly-known transition bars and directions (a sign-convention check the
 statistical test couldn't fail loudly on by chance); and an equity reconciliation reusing M4's
 "reconstruct final equity from the raw fill log by hand" pattern for this two-leg case.
+
+### Walk-forward validation, sensitivity, and the deflated Sharpe ratio (M6)
+
+`signals/discovery.py` flags its own limitation honestly: testing many pairs invites
+multiple-comparisons bias — some pairs look cointegrated by chance, and a low in-sample
+p-value is not evidence of out-of-sample tradability. M6 is three tools that address exactly
+that, each independently verified rather than trusted by inspection.
+
+**Walk-forward** (`statlab.validation.walkforward`) never lets pair *selection* see the data
+it's about to be graded on: for each rolling window, `discover_pairs` runs only on the train
+slice, and the chosen pair is backtested strictly on the following test slice.
+
+```bash
+uv run statlab ingest --source synthetic --out data/bars --n 1200 --pairs 3 --noise 3 --seed 17
+uv run statlab validate --dataset data/bars --train-days 200 --test-days 100
+```
+
+```
+walk-forward: 10 windows, train=200d test=100d
+  2015-10-09 -> 2016-02-25  no pair discovered
+  2016-02-26 -> 2016-07-14  P1b~P1a  return=+1.20%  sharpe=2.15  fills=12
+  2016-07-15 -> 2016-12-01  P1b~P1a  return=+0.92%  sharpe=2.10  fills=12
+  2016-12-02 -> 2017-04-20  P1b~P1a  return=+0.73%  sharpe=1.14  fills=12
+  2017-04-21 -> 2017-09-07  P2b~P2a  return=+0.00%  sharpe=0.00  fills=0
+  2017-09-08 -> 2018-01-25  P1b~P1a  return=+0.27%  sharpe=0.67  fills=6
+  2018-01-26 -> 2018-06-14  P2b~P2a  return=+1.11%  sharpe=2.29  fills=12
+  2018-06-15 -> 2018-11-01  P0b~P0a  return=+0.00%  sharpe=0.00  fills=0
+  2018-11-02 -> 2019-03-21  P0b~P0a  return=-0.10%  sharpe=-0.23  fills=8
+  2019-03-22 -> 2019-08-08  no pair discovered
+combined out-of-sample Sharpe: 1.19
+```
+
+Two windows honestly report "no pair discovered" — a real, expected outcome, not hidden or
+papered over. `tests/test_walkforward.py::TestNoLeakageAcrossTheWalkForwardBoundary` proves
+the isolation directly (not just by construction): it spies on every call `discover_pairs`
+receives during a full walk-forward run and asserts each one's price panel is confined to
+that window's `[train_start, train_end]` — the same proof-by-test rigor as M2's
+`test_no_lookahead.py`, applied to this milestone's own causality guarantee.
+
+**Sensitivity grid** (`statlab.validation.sensitivity`) is a small, fully generic cartesian-
+product runner — not pairs-specific — used here to search entry threshold and Kalman `delta`:
+
+```bash
+uv run statlab sensitivity --dataset data/bars --min-corr 0.3 --max-pvalue 0.1
+```
+
+```
+auto-selected pair: P2b~P2a beta=1.370 corr=0.62 p=0.0000 hl=14.1
+sensitivity grid: P2b~P2a  6 combinations
+ entry    delta    metric
+   1.0 0.000001  0.607736
+   1.0 0.000010  0.708253
+   1.5 0.000001  0.810308
+   1.5 0.000010  0.305437
+   2.0 0.000001  0.541415
+   2.0 0.000010 -0.023448
+
+best cell: entry=1.5 delta=1e-06
+  naive Sharpe   : 0.81
+  deflated Sharpe: 1.0000  (SR_0=0.40, N=6)
+```
+
+**Deflated Sharpe ratio** (`statlab.validation.deflated_sharpe`) is what turns that "best of 6"
+into an honest number. Bailey & Lopez de Prado's Probabilistic Sharpe Ratio corrects for
+non-normal returns (Sharpe's own sampling variance depends on skew/kurtosis, not just mean and
+variance — Mertens/Christie's extension of Lo (2002)'s classical formula); the Deflated Sharpe
+Ratio evaluates the best-of-N observed Sharpe against `SR_0`, the expected maximum Sharpe
+achievable by *pure luck* across N trials, via the extreme-value approximation for the max of
+N Gaussians. In the run above, `SR_0=0.40` is the real, non-trivial bar six searched
+configurations set for luck alone; the naive Sharpe of 0.81 clears it decisively (`DSR=1.0`).
+
+Formulas this easy to transcribe wrong from memory get two independent correctness anchors in
+`tests/test_deflated_sharpe.py`, not just unit tests of the code as written: an *exact*
+algebraic check that the Gaussian special case (skew=0, kurtosis=3) reduces precisely to Lo's
+classical closed-form Sharpe-ratio variance, computed independently in the test rather than by
+calling this module; and a Monte Carlo simulation — many replications of N independent
+pure-noise trials, each replication's actual maximum Sharpe compared against this module's own
+prediction for that replication — confirming the extreme-value approximation itself holds
+(accurate for the roughly N >= 10-20 range the approximation is meant for; smaller N is a
+documented, known limitation of the approximation, not a calibration knob). Property tests further confirm
+DSR strictly falls as more trials are searched holding the best result fixed, a single
+genuinely skillful track record scores high, and a clearly unskilled one scores low regardless
+of how many trials were tried.
 
 ## Design principles
 
