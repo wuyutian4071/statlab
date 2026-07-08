@@ -29,6 +29,15 @@ dev = [
     "pandas-stubs>=2.2",
     "types-setuptools",
 ]
+# Narrowly scoped to building/executing notebooks/demo.ipynb (`make notebook`) -- kept
+# separate from `dev` and untouched by ci.yml so the core lint/typecheck/test loop doesn't
+# pay for a Jupyter kernel stack it never uses.
+notebook = [
+    "jupyter>=1.0",
+    "nbclient>=0.10",
+    "nbformat>=5.10",
+    "ipykernel>=6.29",
+]
 
 [build-system]
 requires = ["hatchling"]

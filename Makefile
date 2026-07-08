@@ -1,4 +1,4 @@
-.PHONY: help install lint format-check format typecheck test cov check reproduce clean
+.PHONY: help install lint format-check format typecheck test cov check reproduce notebook clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -36,6 +36,9 @@ reproduce:  ## Regenerate all synthetic data and results from scratch (determini
 		--report reports/pair_tearsheet.html
 	uv run statlab validate --dataset data/bars --train-days 200 --test-days 100
 	@echo "M7: full pipeline reproduced -- see reports/pair_tearsheet.html"
+
+notebook:  ## Re-execute the demo notebook in place (requires: uv sync --group notebook)
+	uv run --group notebook jupyter nbconvert --to notebook --execute --inplace notebooks/demo.ipynb
 
 clean:  ## Remove caches and generated artifacts
 	rm -rf .mypy_cache .ruff_cache .pytest_cache htmlcov .coverage coverage.xml
