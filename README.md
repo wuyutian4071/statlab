@@ -21,9 +21,9 @@
 
 ## Status
 
-Built milestone by milestone. Current: **M6 — walk-forward validation**: pair discovery is
-never trusted in-sample — every reported result is either backtested strictly out-of-sample
-on data discovery never saw, or explicitly deflated for how many configurations were searched.
+Built milestone by milestone. Current: **M7 — reporting**: `make reproduce` runs the full
+pipeline end to end and lands a real HTML tear sheet, and a fully-executed demo notebook walks
+through the same pipeline via the Python API for anyone who'd rather read it than run it.
 
 | Milestone | Scope | State |
 |-----------|-------|-------|
@@ -33,7 +33,7 @@ on data discovery never saw, or explicitly deflated for how many configurations 
 | M4 | Event-driven backtester + portfolio-accounting invariants + cost model | ✅ |
 | M5 | Strategy wiring + single-pair known-answer backtests | ✅ |
 | M6 | Walk-forward + sensitivity grid + deflated Sharpe | ✅ |
-| M7 | HTML tear sheet + notebooks + `make reproduce` | ⬜ |
+| M7 | HTML tear sheet + notebooks + `make reproduce` | ✅ |
 | M8 | Polished docs, honest results discussion, architecture diagram | ⬜ |
 
 ## Quickstart
@@ -59,6 +59,11 @@ uv run statlab backtest-pair --dataset data/bars --min-corr 0.3 --max-pvalue 0.1
 # deflated Sharpe ratio (see the M6 section below for worked examples):
 uv run statlab validate --dataset data/bars --train-days 200 --test-days 100
 uv run statlab sensitivity --dataset data/bars --min-corr 0.3 --max-pvalue 0.1
+
+# M7: an HTML tear sheet for a single backtest, or the whole pipeline at once:
+uv run statlab backtest-pair --dataset data/bars --min-corr 0.3 --max-pvalue 0.1 \
+	--report reports/pair_tearsheet.html
+make reproduce
 ```
 
 ### The point-in-time universe (M2)
@@ -274,6 +279,55 @@ documented, known limitation of the approximation, not a calibration knob). Prop
 DSR strictly falls as more trials are searched holding the best result fixed, a single
 genuinely skillful track record scores high, and a clearly unskilled one scores low regardless
 of how many trials were tried.
+
+### Reporting: HTML tear sheets, the demo notebook, and `make reproduce` (M7)
+
+`statlab.report.render_tearsheet` turns a `BacktestResult` into a single self-contained HTML
+file — a stats table (total return, Sharpe, max drawdown, annualized volatility, win rate,
+fills, transaction costs) plus three charts (equity curve, drawdown, daily-return distribution)
+rendered headless with matplotlib and embedded as base64 PNGs, so there's no folder of image
+assets to ship alongside the report — easy to archive, email, or open straight from disk.
+
+```bash
+uv run statlab ingest --source synthetic --out data/bars --n 400 --pairs 2 --noise 2 --seed 42
+uv run statlab backtest-pair --dataset data/bars --min-corr 0.3 --max-pvalue 0.1 \
+	--report reports/pair_tearsheet.html
+```
+
+```
+auto-selected pair: P0b~P0a beta=1.810 corr=0.58 p=0.0004 hl=7.6
+backtest-pair P0b~P0a  2015-01-02 -> 2016-07-14  (400 days)
+  initial equity : 1,000,000
+  final equity   : 1,015,561
+  total return   : +1.56%
+  ann. Sharpe    : 0.94
+  transaction cost: 956
+  fills          : 32
+  tear sheet written to reports/pair_tearsheet.html
+```
+
+`compute_stats` mirrors `BacktestResult.total_return`'s own too-short-equity-curve guard
+(zeroed stats, not NaN, for a degenerate run), and is checked in `tests/test_tearsheet.py`
+against independently hand-computed expected values — max drawdown, annualized volatility, win
+rate, and Sharpe on a small constructed equity curve — plus HTML-content checks that every
+embedded chart is genuine, non-trivial, PNG-magic-byte-verified image data, not just "the
+function returned a string."
+
+**`make reproduce`** now runs the real pipeline end to end — ingest, pair discovery, a
+tear-sheeted single-pair backtest, and walk-forward validation — rather than stopping at raw
+data generation (its M2-era scope). Verified by running it from a clean `data/`/`reports/`
+state: ~18s, and every number it prints matches what the M5/M6 sections above already document,
+confirming the whole pipeline is deterministic end to end, not just its individual pieces.
+
+**`notebooks/demo.ipynb`** is the same pipeline again, this time via the Python API rather than
+the CLI, for anyone who'd rather read (or step through) it than run commands: ingest → discover
+→ backtest a pair with the equity curve plotted inline → walk-forward validate → render and
+display the tear sheet inline. Built programmatically with `nbformat` and executed end to end
+with `nbclient` before being committed — every output cell holds real numbers from an actual
+run, not illustrative placeholders, and they match the CLI's own documented output for the same
+seeds. `make notebook` re-executes it in place (needs the narrowly-scoped `notebook` dependency
+group: `uv sync --group notebook` — kept out of `dev` and untouched by CI, so the core
+lint/typecheck/test loop never pays for a Jupyter kernel stack it doesn't use).
 
 ## Design principles
 
