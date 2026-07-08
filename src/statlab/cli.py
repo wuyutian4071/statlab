@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 
@@ -32,6 +33,13 @@ from statlab.data import (
 )
 from statlab.data.sources import BarSource
 from statlab.signals import SignalParams, discover_pairs
+from statlab.validation import (
+    combined_oos_sharpe,
+    deflated_sharpe_ratio,
+    run_walk_forward,
+    sensitivity_grid,
+    walk_forward_windows,
+)
 
 
 def _cmd_version(_: argparse.Namespace) -> int:
@@ -156,6 +164,98 @@ def _cmd_backtest_pair(ns: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_validate(ns: argparse.Namespace) -> int:
+    """M6: walk-forward discovery+backtest — discover a pair on each train window, trade it
+    strictly out-of-sample on the following test window, repeat rolling forward."""
+    universe = PointInTimeUniverse.from_bars(read_bars(ns.dataset))
+    days = universe.trading_days("1900-01-01", "2100-01-01")
+
+    windows = walk_forward_windows(days, ns.train_days, ns.test_days, ns.step_days)
+    if not windows:
+        print("not enough history for even one walk-forward window")
+        return 1
+
+    results = run_walk_forward(
+        universe,
+        windows,
+        cash=ns.cash,
+        notional=ns.notional,
+        min_correlation=ns.min_corr,
+        max_pvalue=ns.max_pvalue,
+        max_half_life=ns.max_half_life,
+    )
+
+    print(f"walk-forward: {len(windows)} windows, train={ns.train_days}d test={ns.test_days}d")
+    for r in results:
+        label = f"{r.window.test_start.date()} -> {r.window.test_end.date()}"
+        if r.pair is None or r.result is None:
+            print(f"  {label}  no pair discovered")
+            continue
+        sharpe = sharpe_ratio(r.result.returns())
+        print(
+            f"  {label}  {r.pair.y}~{r.pair.x}  return={r.result.total_return:+.2%}  "
+            f"sharpe={sharpe:.2f}  fills={len(r.result.fills)}"
+        )
+
+    print(f"combined out-of-sample Sharpe: {combined_oos_sharpe(results):.2f}")
+    return 0
+
+
+def _cmd_sensitivity(ns: argparse.Namespace) -> int:
+    """M6: a small entry/delta sensitivity grid for a pair, reporting the deflated Sharpe of
+    the best cell next to its naive (undeflated) Sharpe so the discount is visible."""
+    bars = read_bars(ns.dataset)
+    universe = PointInTimeUniverse.from_bars(bars)
+
+    y, x = ns.y, ns.x
+    if not y or not x:
+        candidates = discover_pairs(
+            to_price_panel(bars), min_correlation=ns.min_corr, max_pvalue=ns.max_pvalue
+        )
+        if not candidates:
+            print("no cointegrated pairs found to auto-select; pass --y/--x explicitly")
+            return 1
+        top = candidates[0]
+        y, x = top.y, top.x
+        print(f"auto-selected pair: {top}")
+
+    days = universe.trading_days("1900-01-01", "2100-01-01")
+    if len(days) < 2:
+        print("not enough history to backtest")
+        return 1
+    start, end = days[0], days[-1]
+
+    entries = [float(v) for v in ns.entries.split(",")]
+    deltas = [float(v) for v in ns.deltas.split(",")]
+    returns_by_combo: dict[tuple[float, float], np.ndarray] = {}
+
+    def run_fn(entry: float, delta: float) -> float:
+        params = SignalParams(entry=entry, exit=entry * 0.25, stop=entry * 2.0)
+        strategy = PairsStrategy(y, x, ns.notional, params=params, delta=delta)
+        engine = BacktestEngine(universe, strategy, Portfolio(ns.cash))
+        result = engine.run(start, end)
+        returns = result.returns()
+        returns_by_combo[(entry, delta)] = returns.to_numpy()
+        return sharpe_ratio(returns)
+
+    grid = sensitivity_grid({"entry": entries, "delta": deltas}, run_fn)
+    print(f"sensitivity grid: {y}~{x}  {len(grid)} combinations")
+    print(grid.to_string(index=False))
+
+    best_row = grid.loc[grid["metric"].idxmax()]
+    best_entry = cast(float, best_row["entry"])
+    best_delta = cast(float, best_row["delta"])
+    best_returns = returns_by_combo[(best_entry, best_delta)]
+    dsr_result = deflated_sharpe_ratio(grid["metric"].tolist(), best_returns=best_returns)
+    print(f"\nbest cell: entry={best_entry} delta={best_delta}")
+    print(f"  naive Sharpe   : {best_row['metric']:.2f}")
+    print(
+        f"  deflated Sharpe: {dsr_result.dsr:.4f}  "
+        f"(SR_0={dsr_result.sr_0:.2f}, N={dsr_result.n_trials})"
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="statlab", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -215,6 +315,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_btp.add_argument("--stop", type=float, default=4.0, help="stop z-score threshold")
     p_btp.add_argument("--delta", type=float, default=1e-6, help="Kalman drift parameter")
     p_btp.set_defaults(func=_cmd_backtest_pair)
+
+    p_val = sub.add_parser("validate", help="M6: walk-forward discovery+backtest")
+    p_val.add_argument("--dataset", default="data/bars", help="bar dataset root")
+    p_val.add_argument("--train-days", type=int, default=200, help="train window length")
+    p_val.add_argument("--test-days", type=int, default=100, help="test window length")
+    p_val.add_argument("--step-days", type=int, default=None, help="roll step (default test-days)")
+    p_val.add_argument("--cash", type=float, default=1_000_000.0, help="initial cash per window")
+    p_val.add_argument("--notional", type=float, default=200_000.0, help="per-trade notional")
+    p_val.add_argument("--min-corr", type=float, default=0.3, help="discovery: min correlation")
+    p_val.add_argument("--max-pvalue", type=float, default=0.1, help="discovery: max p-value")
+    p_val.add_argument("--max-half-life", type=float, default=252.0, help="discovery: max HL")
+    p_val.set_defaults(func=_cmd_validate)
+
+    p_sens = sub.add_parser("sensitivity", help="M6: sensitivity grid + deflated Sharpe")
+    p_sens.add_argument("--dataset", default="data/bars", help="bar dataset root")
+    p_sens.add_argument("--y", default="", help="dependent-leg ticker (auto-discover if omitted)")
+    p_sens.add_argument("--x", default="", help="independent-leg ticker (auto-discover if omitted)")
+    p_sens.add_argument("--min-corr", type=float, default=0.3, help="auto-discovery: min corr")
+    p_sens.add_argument("--max-pvalue", type=float, default=0.1, help="auto-discovery: max p-value")
+    p_sens.add_argument("--cash", type=float, default=1_000_000.0, help="initial cash")
+    p_sens.add_argument("--notional", type=float, default=200_000.0, help="per-trade notional")
+    p_sens.add_argument("--entries", default="1.0,1.5,2.0", help="comma-separated entry thresholds")
+    p_sens.add_argument("--deltas", default="1e-6,1e-5", help="comma-separated Kalman deltas")
+    p_sens.set_defaults(func=_cmd_sensitivity)
 
     return parser
 
