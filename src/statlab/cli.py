@@ -2,7 +2,8 @@
 
 Subcommands are added milestone by milestone. In M1 only ``version`` and ``gen-synth``
 exist; ``ingest`` / ``research`` / ``backtest`` / ``backtest-pair`` / ``validate`` /
-``sensitivity`` / ``report`` arrive with their layers.
+``sensitivity`` arrive with their layers. HTML tear sheets (M7) are an output option
+(``--report``) on ``backtest-pair`` rather than a separate subcommand.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from statlab.data import (
     write_bars,
 )
 from statlab.data.sources import BarSource
+from statlab.report import render_tearsheet
 from statlab.signals import SignalParams, discover_pairs
 from statlab.validation import (
     combined_oos_sharpe,
@@ -161,6 +163,11 @@ def _cmd_backtest_pair(ns: argparse.Namespace) -> int:
     print(f"  ann. Sharpe    : {sharpe_ratio(result.returns()):.2f}")
     print(f"  transaction cost: {result.total_costs:,.0f}")
     print(f"  fills          : {len(result.fills)}")
+
+    if ns.report:
+        render_tearsheet(result, title=f"{y}~{x} Pairs Backtest", out_path=ns.report)
+        print(f"  tear sheet written to {ns.report}")
+
     return 0
 
 
@@ -314,6 +321,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_btp.add_argument("--exit", type=float, default=0.5, help="exit z-score threshold")
     p_btp.add_argument("--stop", type=float, default=4.0, help="stop z-score threshold")
     p_btp.add_argument("--delta", type=float, default=1e-6, help="Kalman drift parameter")
+    p_btp.add_argument("--report", default=None, help="write an HTML tear sheet to this path")
     p_btp.set_defaults(func=_cmd_backtest_pair)
 
     p_val = sub.add_parser("validate", help="M6: walk-forward discovery+backtest")

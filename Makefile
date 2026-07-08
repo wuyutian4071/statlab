@@ -30,8 +30,12 @@ check: lint format-check typecheck test  ## Run the full CI gate locally (must m
 
 reproduce:  ## Regenerate all synthetic data and results from scratch (deterministic)
 	uv run statlab gen-synth --out data/synthetic/panel.parquet --seed 7
-	uv run statlab ingest --source synthetic --out data/bars --n 1000 --seed 7
-	@echo "M2: synthetic panel + partitioned bar dataset regenerated. Later milestones extend this."
+	uv run statlab ingest --source synthetic --out data/bars --n 1200 --pairs 3 --noise 3 --seed 17
+	uv run statlab research --dataset data/bars --min-corr 0.3 --max-pvalue 0.1
+	uv run statlab backtest-pair --dataset data/bars --min-corr 0.3 --max-pvalue 0.1 \
+		--report reports/pair_tearsheet.html
+	uv run statlab validate --dataset data/bars --train-days 200 --test-days 100
+	@echo "M7: full pipeline reproduced -- see reports/pair_tearsheet.html"
 
 clean:  ## Remove caches and generated artifacts
 	rm -rf .mypy_cache .ruff_cache .pytest_cache htmlcov .coverage coverage.xml
