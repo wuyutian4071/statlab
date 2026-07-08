@@ -17,13 +17,51 @@
   costs and leak future information. This one treats sloppy backtesting as a bug:
   point-in-time data, next-bar fills, square-root market-impact costs, and strict
   train/test separation.
-- **Results:** _(populated as milestones land — see `BENCHMARKS.md` / the tear sheet)._
+- **Results:** strong and internally consistent on synthetic data with a known ground truth
+  (walk-forward combined OOS Sharpe 1.19); genuinely marginal on a real 12-ticker universe
+  (combined OOS Sharpe ~0.21) — see [Real-market results](#real-market-results-honestly-m8)
+  below for the actual numbers and what they do and don't show.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Data["Data (M2)"]
+        SRC["SyntheticSource /\nYFinanceSource"] --> VAL["validate_bars"]
+        VAL --> PARQ[("partitioned\nParquet dataset")]
+        PARQ --> PIT["PointInTimeUniverse\n(as_of / window)"]
+    end
+    subgraph Signals["Signals (M3)"]
+        PIT --> DISC["discover_pairs\n(Engle-Granger + half-life)"]
+    end
+    subgraph Backtest["Backtest (M4/M5)"]
+        DISC --> STRAT["PairsStrategy\n(Kalman hedge + z-score)"]
+        PIT --> STRAT
+        STRAT --> ENGINE["BacktestEngine\nexecute -> mark -> decide"]
+        ENGINE --> RESULT["BacktestResult"]
+    end
+    subgraph Validation["Validation (M6)"]
+        RESULT --> WF["walk_forward"]
+        RESULT --> GRID["sensitivity_grid"]
+        WF --> DSR["deflated_sharpe_ratio"]
+        GRID --> DSR
+    end
+    subgraph Reporting["Reporting (M7)"]
+        RESULT --> TS["render_tearsheet"]
+    end
+```
+
+Every arrow is a real dependency, not an aspiration: `PairsStrategy` only ever reads through
+`PointInTimeUniverse`, `discover_pairs` only ever runs on a train-window slice inside
+`walk_forward`, and `render_tearsheet` only ever consumes a finished `BacktestResult` — the
+causality/no-lookahead guarantees documented throughout this README are what the arrows above
+are actually enforcing, not just describing.
 
 ## Status
 
-Built milestone by milestone. Current: **M7 — reporting**: `make reproduce` runs the full
-pipeline end to end and lands a real HTML tear sheet, and a fully-executed demo notebook walks
-through the same pipeline via the Python API for anyone who'd rather read it than run it.
+Built milestone by milestone. Current: **M8 — honest results**: the pipeline has now been run
+end to end on real market data (M7's `--report`/`validate` machinery, no new code needed for
+this), and the result is reported plainly — see below.
 
 | Milestone | Scope | State |
 |-----------|-------|-------|
@@ -34,7 +72,7 @@ through the same pipeline via the Python API for anyone who'd rather read it tha
 | M5 | Strategy wiring + single-pair known-answer backtests | ✅ |
 | M6 | Walk-forward + sensitivity grid + deflated Sharpe | ✅ |
 | M7 | HTML tear sheet + notebooks + `make reproduce` | ✅ |
-| M8 | Polished docs, honest results discussion, architecture diagram | ⬜ |
+| M8 | Polished docs, honest results discussion, architecture diagram | ✅ |
 
 ## Quickstart
 
@@ -328,6 +366,89 @@ run, not illustrative placeholders, and they match the CLI's own documented outp
 seeds. `make notebook` re-executes it in place (needs the narrowly-scoped `notebook` dependency
 group: `uv sync --group notebook` — kept out of `dev` and untouched by CI, so the core
 lint/typecheck/test loop never pays for a Jupyter kernel stack it doesn't use).
+
+### Real-market results, honestly (M8)
+
+Every result above is on **synthetic** OU-generated data with a known ground truth — the right
+tool for validating the *engineering* (event ordering, cost accounting, walk-forward isolation,
+the deflated Sharpe math), but not evidence the strategy trades real markets profitably.
+`YFinanceSource` / `ingest --source yfinance` (built in M2, never exercised end to end until
+now) closes that gap. No new code was needed for this — it's the same CLI, pointed at real data.
+
+```bash
+uv run statlab ingest --source yfinance \
+	--tickers KO,PEP,XOM,CVX,V,MA,JPM,BAC,GOOGL,GOOG,HD,LOW \
+	--start 2019-01-01 --end 2024-01-01 --out data/real_bars
+uv run statlab research --dataset data/real_bars --min-corr 0.3 --max-pvalue 0.2
+```
+
+```
+wrote 15096 bars across 12 tickers to data/real_bars
+discovered 25 pair(s), ranked by cointegration p-value:
+  V~MA beta=0.840 corr=0.91 p=0.0012 hl=16.6
+  MA~HD beta=0.677 corr=0.56 p=0.0049 hl=28.5
+  GOOGL~GOOG beta=0.988 corr=1.00 p=0.0089 hl=13.1
+  ...
+```
+
+Real cointegration, genuinely found: `GOOGL~GOOG` (correlation 1.00 — unsurprising, they're the
+same company's dual share classes, a useful sanity check that discovery works on real data) and,
+more meaningfully, `V~MA` (Visa/Mastercard — correlation 0.91, p=0.0012, a well-known real
+pairs-trading candidate). So far, so good.
+
+```bash
+uv run statlab backtest-pair --dataset data/real_bars --y V --x MA
+uv run statlab validate --dataset data/real_bars --train-days 252 --test-days 126 \
+	--min-corr 0.3 --max-pvalue 0.2 --max-half-life 90
+```
+
+```
+backtest-pair V~MA  2019-01-02 -> 2023-12-29  (1258 days)
+  ...
+  total return   : +0.00%
+  ann. Sharpe    : 0.00
+  fills          : 0
+
+walk-forward: 7 windows, train=252d test=126d
+  2020-01-02 -> 2020-07-01  PEP~MA  return=+0.36%  sharpe=0.47  fills=8
+  2020-07-02 -> 2020-12-30  PEP~GOOGL  return=+0.00%  sharpe=0.00  fills=0
+  2020-12-31 -> 2021-07-01  PEP~GOOG  return=+0.00%  sharpe=0.00  fills=0
+  2021-07-02 -> 2021-12-30  V~BAC  return=+0.17%  sharpe=0.30  fills=8
+  2021-12-31 -> 2022-07-01  KO~GOOG  return=+0.00%  sharpe=0.00  fills=0
+  2022-07-05 -> 2022-12-30  MA~JPM  return=+0.00%  sharpe=0.00  fills=0
+  2023-01-03 -> 2023-07-05  GOOGL~GOOG  return=+0.00%  sharpe=0.00  fills=0
+combined out-of-sample Sharpe: 0.21
+```
+
+Here is the honest part, stated plainly rather than hidden per this project's own design
+principle #4: `V~MA` never trades at all with `PairsStrategy`'s default `entry=2.0` threshold —
+real daily z-scores on this pair over this window apparently don't swing as wide as the
+synthetic OU spreads the default was implicitly shaped around. This is the same "default
+thresholds calibrated against synthetic dynamics silently undertrade on other data" pattern
+already documented for CLI auto-discovery in M5/M6, now showing up in the strategy's own
+entry/exit thresholds on real data too — a real, previously-undocumented limitation, not fixed
+here. Loosening it (`--entry 1.0 --exit 0.3 --stop 3.5`) does make it trade (24 fills) but nets
+out slightly negative (`-0.12%`, Sharpe `-0.08`) — so the weak walk-forward result above isn't
+merely a no-fills artifact; on this 12-ticker universe, over this window, with these thresholds,
+the strategy's real edge is genuinely close to zero. Combined out-of-sample Sharpe **0.21**,
+against **1.19** on synthetic data.
+
+What this does and doesn't show: it doesn't mean the underlying method is wrong — cointegration,
+the Kalman hedge ratio, and the causal z-score are all independently validated against known
+answers (M3), and the walk-forward/DSR machinery correctly reports a low, honest number here
+rather than an inflated one, which is exactly what it's for. It does mean the strategy's
+*parameters*, tuned by hand against synthetic OU dynamics, don't transfer to real markets without
+real recalibration. A genuine attempt at real-market viability would need: a systematic universe
+instead of 12 hand-picked large caps, out-of-sample parameter selection (M6's sensitivity grid,
+run *inside* each train window, not fixed defaults reused across all of them), a longer or
+rolling real-data window, and cost-model constants calibrated to these tickers' actual quoted
+spreads rather than the model's assumed defaults. None of that is in scope here — the point of
+this section is reporting what actually happened, not fixing it to look better.
+
+(Historical daily OHLC data is stable but not guaranteed byte-identical forever — e.g. rare
+retroactive dividend-adjustment corrections — so a re-run months from now may differ slightly
+from the numbers above; unlike the seeded synthetic examples, this section isn't perfectly
+reproducible by construction, and that's stated here rather than left implicit.)
 
 ## Design principles
 
