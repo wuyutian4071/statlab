@@ -1,7 +1,8 @@
 """Command-line entry point for statlab.
 
 Subcommands are added milestone by milestone. In M1 only ``version`` and ``gen-synth``
-exist; ``ingest`` / ``research`` / ``backtest`` / ``report`` arrive with their layers.
+exist; ``ingest`` / ``research`` / ``backtest`` / ``backtest-pair`` / ``validate`` /
+``sensitivity`` / ``report`` arrive with their layers.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from statlab import __version__
 from statlab.backtest import (
     BacktestEngine,
     BuyAndHoldStrategy,
+    PairsStrategy,
     Portfolio,
     sharpe_ratio,
 )
@@ -29,7 +31,7 @@ from statlab.data import (
     write_bars,
 )
 from statlab.data.sources import BarSource
-from statlab.signals import discover_pairs
+from statlab.signals import SignalParams, discover_pairs
 
 
 def _cmd_version(_: argparse.Namespace) -> int:
@@ -116,6 +118,44 @@ def _cmd_backtest(ns: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_backtest_pair(ns: argparse.Namespace) -> int:
+    """Run the M5 PairsStrategy over a single (auto-discovered or given) pair."""
+    bars = read_bars(ns.dataset)
+    universe = PointInTimeUniverse.from_bars(bars)
+
+    y, x = ns.y, ns.x
+    if not y or not x:
+        candidates = discover_pairs(
+            to_price_panel(bars), min_correlation=ns.min_corr, max_pvalue=ns.max_pvalue
+        )
+        if not candidates:
+            print("no cointegrated pairs found to auto-select; pass --y/--x explicitly")
+            return 1
+        top = candidates[0]
+        y, x = top.y, top.x
+        print(f"auto-selected pair: {top}")
+
+    days = universe.trading_days("1900-01-01", "2100-01-01")
+    if len(days) < 2:
+        print("not enough history to backtest")
+        return 1
+    start, end = days[0], days[-1]
+
+    params = SignalParams(entry=ns.entry, exit=ns.exit, stop=ns.stop)
+    strategy = PairsStrategy(y, x, ns.notional, params=params, delta=ns.delta)
+    engine = BacktestEngine(universe, strategy, Portfolio(ns.cash))
+    result = engine.run(start, end)
+
+    print(f"backtest-pair {y}~{x}  {start.date()} -> {end.date()}  ({len(days)} days)")
+    print(f"  initial equity : {result.initial_cash:,.0f}")
+    print(f"  final equity   : {result.equity_curve.iloc[-1]:,.0f}")
+    print(f"  total return   : {result.total_return:+.2%}")
+    print(f"  ann. Sharpe    : {sharpe_ratio(result.returns()):.2f}")
+    print(f"  transaction cost: {result.total_costs:,.0f}")
+    print(f"  fills          : {len(result.fills)}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="statlab", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -159,6 +199,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_bt.add_argument("--notional", type=float, default=500_000.0, help="invested notional")
     p_bt.add_argument("--max-names", type=int, default=5, help="max tickers to hold")
     p_bt.set_defaults(func=_cmd_backtest)
+
+    p_btp = sub.add_parser("backtest-pair", help="backtest the M5 pairs-trading strategy")
+    p_btp.add_argument("--dataset", default="data/bars", help="bar dataset root")
+    p_btp.add_argument("--y", default="", help="dependent-leg ticker (auto-discovers if omitted)")
+    p_btp.add_argument("--x", default="", help="independent-leg ticker (auto-discovers if omitted)")
+    p_btp.add_argument(
+        "--min-corr", type=float, default=0.7, help="auto-discovery: min correlation"
+    )
+    p_btp.add_argument(
+        "--max-pvalue", type=float, default=0.05, help="auto-discovery: max p-value"
+    )
+    p_btp.add_argument("--cash", type=float, default=1_000_000.0, help="initial cash")
+    p_btp.add_argument("--notional", type=float, default=200_000.0, help="per-trade notional")
+    p_btp.add_argument("--entry", type=float, default=2.0, help="entry z-score threshold")
+    p_btp.add_argument("--exit", type=float, default=0.5, help="exit z-score threshold")
+    p_btp.add_argument("--stop", type=float, default=4.0, help="stop z-score threshold")
+    p_btp.add_argument("--delta", type=float, default=1e-6, help="Kalman drift parameter")
+    p_btp.set_defaults(func=_cmd_backtest_pair)
 
     return parser
 
