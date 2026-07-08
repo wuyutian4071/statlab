@@ -21,15 +21,16 @@
 
 ## Status
 
-Built milestone by milestone. Current: **M3 — the signal-research layer**: cointegration
-tests, half-life, a hand-rolled Kalman hedge ratio, the z-score signal, and pair discovery.
+Built milestone by milestone. Current: **M4 — the event-driven backtester**: next-bar-open
+execution, a three-component cost model, portfolio accounting with a checkable equity
+invariant, and the strategy/engine loop that ties it all together.
 
 | Milestone | Scope | State |
 |-----------|-------|-------|
 | M1 | Repo skeleton, uv/ruff/mypy/pytest CI, synthetic OU data generator | ✅ |
 | M2 | Data layer (schema, sources, validation, Parquet storage) + `PointInTimeUniverse` + `test_no_lookahead.py` | ✅ |
 | M3 | Cointegration (Engle-Granger, Johansen), half-life, hand-rolled Kalman hedge ratio, z-score signal, pair discovery | ✅ |
-| M4 | Event-driven backtester + portfolio-accounting invariants + cost model | ⬜ |
+| M4 | Event-driven backtester + portfolio-accounting invariants + cost model | ✅ |
 | M5 | Strategy wiring + single-pair known-answer backtests | ⬜ |
 | M6 | Walk-forward + sensitivity grid + deflated Sharpe | ⬜ |
 | M7 | HTML tear sheet + notebooks + `make reproduce` | ⬜ |
@@ -45,6 +46,9 @@ make check          # lint + typecheck + test (the full CI gate)
 # Ingest bars into a partitioned Parquet dataset (offline synthetic source by default;
 # use --source yfinance --tickers AAPL,MSFT,... for real data):
 uv run statlab ingest --source synthetic --out data/bars --n 1000 --seed 7
+
+# Run the buy-and-hold engine demo over an ingested dataset:
+uv run statlab backtest --dataset data/bars --cash 1000000 --max-names 5
 ```
 
 ### The point-in-time universe (M2)
@@ -90,6 +94,42 @@ statsmodels reference:
 - **`discover_pairs`** — the funnel: correlation pre-filter → cointegration → half-life
   band, ranked by p-value. (Multiple-comparisons caveat: this is in-sample selection;
   M6's walk-forward + deflated Sharpe address it.)
+
+### The event-driven backtester (M4)
+
+Per trading day `t`, the engine runs a strict three-step loop — **execute → mark → decide**
+— and it's the ordering, not just the components, that makes the backtest lookahead-free:
+
+```python
+from statlab.backtest import BacktestEngine, BuyAndHoldStrategy, Portfolio, sharpe_ratio
+from statlab.data import PointInTimeUniverse, SyntheticSource
+
+u = PointInTimeUniverse.from_bars(SyntheticSource(n=1000, seed=7).fetch())
+start, end = u.trading_days("2000-01-01", "2100-01-01")[[0, -1]]
+tickers = u.members_as_of(start)[:5]
+
+engine = BacktestEngine(u, BuyAndHoldStrategy(tickers, notional=500_000), Portfolio(1_000_000))
+result = engine.run(start, end)
+sharpe_ratio(result.returns())
+```
+
+1. **Execute** — orders decided on bar `t-1` fill at bar `t`'s (adjusted) open, priced
+   through `CostModel`: `max(c_min, c_ps·Q)` commission + half-spread in bps of notional +
+   square-root market impact `η·σ·√(Q/ADV)`, with `σ`/ADV read causally as of `t`.
+2. **Mark** — the portfolio is marked to `t`'s close and the equity curve records that point.
+3. **Decide** — only now does the strategy see bar `t` and return orders, which will
+   themselves fill on `t+1`'s open.
+
+A decision at `t` can therefore only ever transact at `t+1` — combined with the point-in-time
+universe from M2, there is structurally no path for future information to reach a trade.
+
+**The accounting invariant**: `Portfolio` tracks trade cashflow (`cash`) and transaction
+costs (`costs`) separately, so `equity = cash + Σ qᵢpᵢ - costs` is independently checkable —
+`tests/test_engine.py::TestInvariantEndToEnd` reconstructs final equity from the raw fill log
+by hand and asserts it matches the engine's own number bit for bit, and a second test proves
+a costed run always ends with strictly less equity than an identical frictionless one. Real
+pairs-trading strategy wiring lands in M5; this milestone's `BuyAndHoldStrategy` exists to
+exercise and benchmark the engine itself (`statlab backtest` on the CLI).
 
 ## Design principles
 
