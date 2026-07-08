@@ -1,4 +1,4 @@
-.PHONY: help install lint format typecheck test cov check reproduce clean
+.PHONY: help install lint format-check format typecheck test cov check reproduce clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -9,6 +9,9 @@ install:  ## Sync all dependencies (incl. dev group) into a local venv
 
 lint:  ## Run ruff lint checks
 	uv run ruff check src tests
+
+format-check:  ## Check formatting without modifying files (what CI actually runs)
+	uv run ruff format --check src tests
 
 format:  ## Auto-format with ruff
 	uv run ruff format src tests
@@ -23,7 +26,7 @@ test:  ## Run the test suite
 cov:  ## Run tests with coverage report
 	uv run pytest --cov=statlab --cov-report=term-missing
 
-check: lint typecheck test  ## Run the full CI gate locally
+check: lint format-check typecheck test  ## Run the full CI gate locally (must match ci.yml exactly)
 
 reproduce:  ## Regenerate all synthetic data and results from scratch (deterministic)
 	uv run statlab gen-synth --out data/synthetic/panel.parquet --seed 7

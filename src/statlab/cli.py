@@ -207,9 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_btp.add_argument(
         "--min-corr", type=float, default=0.7, help="auto-discovery: min correlation"
     )
-    p_btp.add_argument(
-        "--max-pvalue", type=float, default=0.05, help="auto-discovery: max p-value"
-    )
+    p_btp.add_argument("--max-pvalue", type=float, default=0.05, help="auto-discovery: max p-value")
     p_btp.add_argument("--cash", type=float, default=1_000_000.0, help="initial cash")
     p_btp.add_argument("--notional", type=float, default=200_000.0, help="per-trade notional")
     p_btp.add_argument("--entry", type=float, default=2.0, help="entry z-score threshold")
