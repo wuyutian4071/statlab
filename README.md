@@ -21,9 +21,9 @@
 
 ## Status
 
-Built milestone by milestone. Current: **M4 — the event-driven backtester**: next-bar-open
-execution, a three-component cost model, portfolio accounting with a checkable equity
-invariant, and the strategy/engine loop that ties it all together.
+Built milestone by milestone. Current: **M5 — the pairs-trading strategy**: the M3 signals
+(Kalman hedge ratio, z-score state machine) wired into an actual `Strategy` that trades a
+cointegrated pair through the M4 engine, verified against independently-computed known answers.
 
 | Milestone | Scope | State |
 |-----------|-------|-------|
@@ -31,7 +31,7 @@ invariant, and the strategy/engine loop that ties it all together.
 | M2 | Data layer (schema, sources, validation, Parquet storage) + `PointInTimeUniverse` + `test_no_lookahead.py` | ✅ |
 | M3 | Cointegration (Engle-Granger, Johansen), half-life, hand-rolled Kalman hedge ratio, z-score signal, pair discovery | ✅ |
 | M4 | Event-driven backtester + portfolio-accounting invariants + cost model | ✅ |
-| M5 | Strategy wiring + single-pair known-answer backtests | ⬜ |
+| M5 | Strategy wiring + single-pair known-answer backtests | ✅ |
 | M6 | Walk-forward + sensitivity grid + deflated Sharpe | ⬜ |
 | M7 | HTML tear sheet + notebooks + `make reproduce` | ⬜ |
 | M8 | Polished docs, honest results discussion, architecture diagram | ⬜ |
@@ -49,6 +49,11 @@ uv run statlab ingest --source synthetic --out data/bars --n 1000 --seed 7
 
 # Run the buy-and-hold engine demo over an ingested dataset:
 uv run statlab backtest --dataset data/bars --cash 1000000 --max-names 5
+
+# Run the M5 pairs-trading strategy (auto-discovers a pair if --y/--x aren't given —
+# the default discovery thresholds are conservative, so a smaller/looser demo dataset
+# tends to actually find one; see the M5 section below for a worked example):
+uv run statlab backtest-pair --dataset data/bars --min-corr 0.3 --max-pvalue 0.1
 ```
 
 ### The point-in-time universe (M2)
@@ -130,6 +135,57 @@ by hand and asserts it matches the engine's own number bit for bit, and a second
 a costed run always ends with strictly less equity than an identical frictionless one. Real
 pairs-trading strategy wiring lands in M5; this milestone's `BuyAndHoldStrategy` exists to
 exercise and benchmark the engine itself (`statlab backtest` on the CLI).
+
+### The pairs-trading strategy (M5)
+
+`PairsStrategy` wires the M3 signals into the `Strategy` protocol — no new signal math, purely
+the integration: turning a causal hedge ratio and z-score into correctly-signed, correctly-sized,
+correctly-lagged orders. Each bar it re-runs the batch `kalman_hedge` filter over the full
+history available so far rather than maintaining incremental filter state; because the filter and
+the z-score state machine are both causal (step `t` depends only on data through `t`), this is
+mathematically identical to an incremental filter, just `O(n)` per bar instead of `O(1)` — a
+deliberate simplicity-over-performance tradeoff, since it means the live strategy calls the exact
+same, already-validated M3 function the same way discovery does, with zero risk of a second,
+subtly-divergent re-implementation of the recursion.
+
+```bash
+uv run statlab ingest --source synthetic --out data/bars --n 400 --pairs 2 --noise 2 --seed 42
+uv run statlab backtest-pair --dataset data/bars --min-corr 0.3 --max-pvalue 0.1
+```
+
+```
+auto-selected pair: P0b~P0a beta=1.810 corr=0.58 p=0.0004 hl=7.6
+backtest-pair P0b~P0a  2015-01-02 -> 2016-07-14  (400 days)
+  initial equity : 1,000,000
+  final equity   : 1,015,561
+  total return   : +1.56%
+  ann. Sharpe    : 0.94
+  transaction cost: 956
+  fills          : 32
+```
+
+**A real calibration finding worth keeping** (the same spirit as M4's sigma/spread-vs-cost
+finding): the Kalman filter's `delta` parameter (how much the hedge ratio is allowed to drift
+per bar) defaults to `1e-6` here, tighter than `kalman_hedge`'s own general-purpose default of
+`1e-4`. With a larger `delta`, the filter's state uncertainty — and so the innovation variance
+the z-score divides by — keeps growing over a long series, which *dampens* z-score sensitivity
+late in a long backtest even while the underlying spread keeps mean-reverting completely
+normally. The failure mode isn't a crash or a wrong number; it's a strategy that silently never
+trades. Caught by actually running the CLI demo end-to-end and asking why `fills = 0`, not by
+any test in isolation — a reminder that integration-level manual verification finds a different
+class of bug than unit tests do, however thorough the unit tests are.
+
+**Performance, measured, not assumed**: 400 days runs in ~2s. A 3000-day (~12-year) backtest on
+this machine took 37.5s — the `O(n²)` cost is real at that scale, so M6's walk-forward and
+sensitivity-grid tools (many shorter backtests, not one long one) are the more practical way to
+explore a longer history, not a single giant `backtest-pair` run.
+
+Known-answer verification lives in `tests/test_pairs_strategy.py`: fills are checked against a
+state sequence computed independently via the same M3 batch functions (proving the wiring and
+the one-bar execution lag are both correct, not just "it ran"); a small deterministic step-shock
+scenario with exactly-known transition bars and directions (a sign-convention check the
+statistical test couldn't fail loudly on by chance); and an equity reconciliation reusing M4's
+"reconstruct final equity from the raw fill log by hand" pattern for this two-leg case.
 
 ## Design principles
 
